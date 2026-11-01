@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Polish a raw recording of Bytes windows into a website clip.
 
-  python3 videos/polish.py raw/rollover.mov raw/rollover.json site/videos/rollover.mp4
+  python3 videos/polish.py raw/rollover.mov raw/rollover.json site/videos/rollover.mp4 [--preview]
+
+--preview renders a quick 960×540, 30 fps draft in a fraction of the time.
 
 The JSON comes from the recording script, all coordinates in screen points:
 
   {"region": [x, y, w, h], "scale": 2, "windows": [[x, y, w, h], ...], "radius": 26,
    "background": "#rrggbb", "text": "#rrggbb",
-   "events": [{"t": 1.2, "x": 300, "y": 400, "kind": "move" | "click" | "key"}, ...]}
+   "events": [{"t": 1.2, "x": 300, "y": 400, "kind": "move" | "click" | "key"}, ...],
+   "camera": {"zoom": 1.3, "spring": [170, 26], "end": 1.0}}
+
+The camera block comes from the scene file; "end" is how long the clip runs on after the camera has
+come back out, and the rest of the recording is cut.
 
 Each window is cut out of the recording with its rounded corners and laid on a ground taken from
 the theme (its page colour, mixed a little toward its text colour), with a soft shadow. The camera
@@ -43,8 +49,10 @@ def probe(path):
 
 
 def frames(path, w, h):
-    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps={FPS}",
-                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    # Stopping early (the clip is cut) closes this pipe; ffmpeg's complaint about it is noise.
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps={FPS},scale={w}:{h}",
+                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     size = w * h * 3
     while True:
         buf = proc.stdout.read(size)
@@ -106,10 +114,20 @@ def cursor_at(events, t):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("raw"); p.add_argument("log"); p.add_argument("out")
+    p.add_argument("--preview", action="store_true")
     a = p.parse_args()
 
+    global OUT_W, OUT_H, FPS, ZOOM, SPRING
     log = json.load(open(a.log))
+    camera = log.get("camera", {})
+    ZOOM = camera.get("zoom", ZOOM)
+    SPRING = tuple(camera.get("spring", SPRING))
+    resample = Image.LANCZOS
+    if a.preview:
+        OUT_W, OUT_H, FPS, resample = 960, 540, 30, Image.BILINEAR
     src_w, src_h, duration = probe(a.raw)
+    if a.preview:  # half the pixels to cut out and lay down: the draft is small anyway
+        src_w, src_h = src_w // 4 * 2, src_h // 4 * 2
     rx, ry, rw, rh = log["region"]
     scale = src_w / rw  # what the recording really is, whatever the log says
     radius = log.get("radius", 26) * scale
@@ -158,17 +176,21 @@ def main():
 
     events = log["events"]
     spans = bursts(events, duration)
+    if spans and "end" in camera:
+        duration = min(duration, spans[-1][1] + 0.8 + camera["end"])
     print("zoom spans:", [(round(s, 2), round(e, 2)) for s, e in spans], file=sys.stderr)
 
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
                             "-s", f"{OUT_W}x{OUT_H}", "-r", str(FPS), "-i", "-",
-                            "-c:v", "libx264", "-crf", "20", "-preset", "medium",
+                            "-c:v", "libx264", "-crf", "20", "-preset", "ultrafast" if a.preview else "medium",
                             "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.out],
                            stdin=subprocess.PIPE)
     zoom, cx, cy = Spring(1.0), Spring(scene_w / 2), Spring(scene_h / 2)
     dt = 1 / FPS
     for i, frame in enumerate(frames(a.raw, src_w, src_h)):
         t = i * dt
+        if t > duration:
+            break
         canvas = bg.copy()
         for (x, y, w, h), m in zip(windows, masks):
             sx, sy = round(x + ox), round(y + oy)
@@ -190,7 +212,7 @@ def main():
         x0 = min(max(x - view_w / 2, 0), scene_w - view_w)
         y0 = min(max(y - view_h / 2, 0), scene_h - view_h)
         image = Image.fromarray(canvas.astype(np.uint8))
-        image = image.resize((OUT_W, OUT_H), Image.LANCZOS, box=(x0, y0, x0 + view_w, y0 + view_h))
+        image = image.resize((OUT_W, OUT_H), resample, box=(x0, y0, x0 + view_w, y0 + view_h))
         enc.stdin.write(image.tobytes())
     enc.stdin.close()
     enc.wait()
