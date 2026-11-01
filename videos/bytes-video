@@ -2,7 +2,7 @@
 # Builds videos/scene.swift when it changed, then runs it: bytes-video capture|watch|record|setup|check <scene.yaml> [--full]
 set -eu
 here=${0:A:h}
-bin=/tmp/bytes-video/bin/scene
+bin=$here/../.build/scene   # the compiled runner, rebuilt when scene.swift changes
 mkdir -p ${bin:h}
 if [[ ! -x $bin || $here/scene.swift -nt $bin ]]; then swiftc -O $here/scene.swift -o $bin; fi
 cd $here/..
