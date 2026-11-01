@@ -508,6 +508,8 @@ func record(_ scene: Scene, full: Bool) {
     polish.executableURL = URL(filePath: python)
     polish.arguments = (python == "/usr/bin/env" ? ["python3"] : [])
         + [scene.root.appending(path: "videos/polish.py").path, mov.path, json.path, mp4.path] + (full ? [] : ["--preview"])
+    // No terminal input: ffmpeg reads stdin, and outside the terminal's foreground that suspends it.
+    polish.standardInput = FileHandle.nullDevice
     try? polish.run()
     polish.waitUntilExit()
     print("raw: \(mov.path)\nlog: \(json.path)\nclip: \(mp4.path)")
