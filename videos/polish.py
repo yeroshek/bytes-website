@@ -50,7 +50,7 @@ def probe(path):
 
 def frames(path, w, h):
     # Stopping early (the clip is cut) closes this pipe; ffmpeg's complaint about it is noise.
-    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps={FPS},scale={w}:{h}",
+    proc = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vf", f"fps={FPS},scale={w}:{h}",
                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     size = w * h * 3
@@ -180,7 +180,7 @@ def main():
         duration = min(duration, spans[-1][1] + 0.8 + camera["end"])
     print("zoom spans:", [(round(s, 2), round(e, 2)) for s, e in spans], file=sys.stderr)
 
-    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+    enc = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
                             "-s", f"{OUT_W}x{OUT_H}", "-r", str(FPS), "-i", "-",
                             "-c:v", "libx264", "-crf", "20", "-preset", "ultrafast" if a.preview else "medium",
                             "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.out],
