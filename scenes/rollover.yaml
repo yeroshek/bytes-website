@@ -1,0 +1,22 @@
+# Roll Over Tasks: yesterday's open tasks move to today and show as moved where they were.
+vault: vault                      # copied fresh for every run; {today} / {yesterday} filled in
+window:
+  size: [1300, 720]
+  theme: Bytes
+  sidebar: off
+  tabs: ["Daily/{yesterday}.md", "Daily/{today}.md"]
+  layout: side-by-side
+  focus: "Daily/{today}.md"
+steps:
+  - wait: 1
+  - click: "→ 3"
+  - wait: 1.8
+  - key: cmd+return
+  - wait: 0.3
+  - move: "Draft the website hero copy"
+    pane: "Daily/{yesterday}.md"
+  - wait: 2.5
+camera:
+  zoom: 1.3
+  spring: [170, 26]               # stiffness, damping
+  end: 1.0                        # seconds kept after the last step

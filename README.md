@@ -2,6 +2,19 @@
 
 The website for [Bytes](https://github.com/yeroshek/bytes), and the feature videos it shows.
 
+## Presentation vault
+
+`vault/` holds the notes every video is recorded over. File names and text may use `{today}` and
+`{yesterday}` (`2026-11-01`) and `{today:title}` (`Sun, 1 Nov 2026`); a run copies the vault to a
+temporary folder with them filled in, so the dates are always current. Edit notes here, never in
+the copy.
+
+## Scenes
+
+`scenes/<feature>.yaml` describes one video: the window (size, theme, sidebar, tabs and layout),
+the steps (`wait`, `click`, `move`, `key`, aimed at elements by their text, not by pixels) and the
+camera.
+
 ## Videos
 
 Each `videos/bytes-video-*.sh` records one feature from a Debug build of Bytes ("Bytes Dev"),
