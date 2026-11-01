@@ -1,9 +1,9 @@
 #!/bin/zsh
-# Builds videos/scene.swift when it changed, then runs it: bytes-video capture|watch|record|setup|check <scene.yaml> [--full]
+# Runs videos/scene.swift: bytes-video capture|watch|record|setup|check <scene.yaml> [--full]
+# Swift is compiled, so the runner is built into .build/ (gitignored) and rebuilt only when scene.swift changes.
 set -eu
-here=${0:A:h}
-bin=$here/../.build/scene   # the compiled runner, rebuilt when scene.swift changes
-mkdir -p ${bin:h}
-if [[ ! -x $bin || $here/scene.swift -nt $bin ]]; then swiftc -O $here/scene.swift -o $bin; fi
-cd $here/..
+root=${0:A:h:h}
+bin=$root/.build/bytes-video
+if [[ ! -x $bin || $root/videos/scene.swift -nt $bin ]]; then mkdir -p $root/.build && swiftc -O $root/videos/scene.swift -o $bin; fi
+cd $root
 exec $bin "$@"
