@@ -1,25 +1,36 @@
 #!/usr/bin/env python3
-"""Polish a raw window recording into a website clip: a soft background from the theme's tokens,
-rounded corners, a shadow, and planned zooms. Needs ffmpeg and Pillow.
+"""Polish a raw recording of Bytes windows into a website clip.
 
-  python3 videos/polish.py raw.mov out.mp4 [--zoom START,END,X,Y,SCALE ...] [--trim START,END]
+  python3 videos/polish.py raw/rollover.mov raw/rollover.json site/videos/rollover.mp4
 
-X and Y are where to zoom, as fractions of the window (0..1). The zoom eases in over 0.6 s at START
-and back out at END.
+The JSON comes from the recording script, all coordinates in screen points:
+
+  {"region": [x, y, w, h], "scale": 2, "windows": [[x, y, w, h], ...], "radius": 26,
+   "background": "#rrggbb", "text": "#rrggbb",
+   "events": [{"t": 1.2, "x": 300, "y": 400, "kind": "move" | "click" | "key"}, ...]}
+
+Each window is cut out of the recording with its rounded corners and laid on a ground taken from
+the theme (its page colour, mixed a little toward its text colour), with a soft shadow. The camera
+zooms only around the cursor while something happens (clicks and keys, and the cursor moves right
+after them), and follows it there; zoom and pan move on springs. Needs ffmpeg, numpy and Pillow.
 """
 
-import argparse, json, subprocess, sys, tempfile, os
+import argparse, json, math, subprocess, sys
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-W, H = 3840, 2160          # canvas, rendered at 2x then downscaled for a crisp, steady zoom
-OUT_W, OUT_H = 1920, 1080
-FPS = 30
-BOX_W, BOX_H = 3200, 1840  # the window fits in this box, centred
-RADIUS = 36                # window corner radius on the 2x canvas
-RAMP = 0.6
+OUT_W, OUT_H, FPS = 1920, 1080, 60
+PAD = 0.05            # scene padding around the windows, as a fraction of their width
+ZOOM = 1.3            # how far the camera zooms in on the cursor
+LEAD = 0.45           # seconds the zoom starts before the first click of a burst
+TAIL = 1.4            # seconds it stays after the last thing that happened
+GAP = 2.5             # clicks and keys closer than this stay one zoom
+SPRING = (170.0, 26.0)  # stiffness, damping (mass 1): a quick move with a hint of overshoot
 
-# Background from packages/theme/tokens.json, light scheme: selectionMuted → selection.
-TOP, BOTTOM = (227, 240, 255), (179, 215, 255)
+
+def hex_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
 
 
 def probe(path):
@@ -31,80 +42,158 @@ def probe(path):
     return s["width"], s["height"], float(info["format"]["duration"])
 
 
-def background(win_w, win_h, x, y, path):
-    bg = Image.new("RGB", (W, H))
-    draw = ImageDraw.Draw(bg)
-    for row in range(H):
-        f = row / (H - 1)
-        draw.line([(0, row), (W, row)], fill=tuple(round(a + (b - a) * f) for a, b in zip(TOP, BOTTOM)))
-    shadow = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(shadow).rounded_rectangle([x, y + 40, x + win_w, y + 40 + win_h], RADIUS, fill=90)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(60))
-    bg.paste((20, 30, 50), (0, 0), shadow)
-    bg.save(path)
+def frames(path, w, h):
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps={FPS}",
+                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    size = w * h * 3
+    while True:
+        buf = proc.stdout.read(size)
+        if len(buf) < size:
+            break
+        yield np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+    proc.wait()
 
 
-def mask(win_w, win_h, path):
-    m = Image.new("L", (win_w, win_h), 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, win_w - 1, win_h - 1], RADIUS, fill=255)
-    m.save(path)
+class Spring:
+    def __init__(self, value):
+        self.value, self.velocity = value, 0.0
+
+    def step(self, target, dt):
+        k, c = SPRING
+        for _ in range(4):
+            h = dt / 4
+            force = k * (target - self.value) - c * self.velocity
+            self.velocity += force * h
+            self.value += self.velocity * h
+        return self.value
 
 
-def ease(a, b):
-    """0 before a, smoothstep up to 1 over RAMP, 1 until b, back to 0 over RAMP."""
-    up = f"clip((it-{a})/{RAMP},0,1)"
-    down = f"clip((it-{b})/{RAMP},0,1)"
-    return f"(({up})*({up})*(3-2*({up})) - ({down})*({down})*(3-2*({down})))"
+def bursts(events, duration):
+    """Spans of time the camera is zoomed: clicks and keys closer than GAP, plus the cursor moves
+    that follow within TAIL, from LEAD before the first to TAIL after the last."""
+    acts = sorted(e["t"] for e in events if e["kind"] in ("click", "key"))
+    spans = []
+    for t in acts:
+        if spans and t - spans[-1][1] < GAP:
+            spans[-1][1] = t
+        else:
+            spans.append([t, t])
+    moves = sorted(e["t"] for e in events if e["kind"] == "move")
+    out = []
+    for first, last in spans:
+        end = last
+        for t in moves:
+            if end < t <= end + TAIL:
+                end = t
+        out.append((max(0.0, first - LEAD), min(duration - 0.9, end + TAIL)))
+    return out
+
+
+def cursor_at(events, t):
+    """The cursor's position at t, between the logged steps."""
+    before = [e for e in events if e["t"] <= t]
+    after = [e for e in events if e["t"] > t]
+    if not before:
+        return (after[0]["x"], after[0]["y"]) if after else None
+    a = before[-1]
+    if not after:
+        return a["x"], a["y"]
+    b = after[0]
+    f = (t - a["t"]) / max(1e-6, b["t"] - a["t"])
+    return a["x"] + (b["x"] - a["x"]) * f, a["y"] + (b["y"] - a["y"]) * f
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("raw"); p.add_argument("out")
-    p.add_argument("--zoom", action="append", default=[])
-    p.add_argument("--trim")
+    p.add_argument("raw"); p.add_argument("log"); p.add_argument("out")
     a = p.parse_args()
 
+    log = json.load(open(a.log))
     src_w, src_h, duration = probe(a.raw)
-    scale = min(BOX_W / src_w, BOX_H / src_h)
-    win_w, win_h = round(src_w * scale) // 2 * 2, round(src_h * scale) // 2 * 2
-    x, y = (W - win_w) // 2, (H - win_h) // 2 - 20
+    rx, ry, rw, rh = log["region"]
+    scale = src_w / rw  # what the recording really is, whatever the log says
+    radius = log.get("radius", 26) * scale
+    windows = [[(x - rx) * scale, (y - ry) * scale, w * scale, h * scale] for x, y, w, h in log["windows"]]
+    windows = [[round(v) for v in win] for win in windows]
 
-    tmp = tempfile.mkdtemp()
-    bg, mk = os.path.join(tmp, "bg.png"), os.path.join(tmp, "mask.png")
-    background(win_w, win_h, x, y, bg)
-    mask(win_w, win_h, mk)
+    # The scene: the windows where they stood, with padding, widened to 16:9.
+    left = min(w[0] for w in windows); top = min(w[1] for w in windows)
+    right = max(w[0] + w[2] for w in windows); bottom = max(w[1] + w[3] for w in windows)
+    pad = (right - left) * PAD
+    scene_w, scene_h = right - left + 2 * pad, bottom - top + 2 * pad
+    if scene_w / scene_h < OUT_W / OUT_H:
+        scene_w = scene_h * OUT_W / OUT_H
+    else:
+        scene_h = scene_w * OUT_H / OUT_W
+    scene_w, scene_h = round(scene_w), round(scene_h)
+    ox = (scene_w - (right - left)) / 2 - left
+    oy = (scene_h - (bottom - top)) / 2 - top
+    to_scene = lambda x, y: ((x - rx) * scale + ox, (y - ry) * scale + oy)
 
-    # Zoom: z = 1 + Σ (scale-1)·ease; the focus point is the zoom-weighted focus of the active zoom.
-    z, fx, fy = "1", f"{W/2}", f"{H/2}"
-    for spec in a.zoom:
-        s, e, zx, zy, zs = map(float, spec.split(","))
-        k = ease(s, e)
-        z += f"+{zs - 1}*{k}"
-        px, py = x + zx * win_w, y + zy * win_h
-        fx = f"({fx})+({px}-{W/2})*{k}"
-        fy = f"({fy})+({py}-{H/2})*{k}"
-    # zoompan's x,y are the top-left of the visible part, in input pixels; keep the focus centred,
-    # clamped to the canvas.
-    zx = f"clip(({fx})-iw/zoom/2,0,iw-iw/zoom)"
-    zy = f"clip(({fy})-ih/zoom/2,0,ih-ih/zoom)"
+    # Ground and shadows, once.
+    page = hex_rgb(log["background"]) if "background" in log else None
+    if page is None:
+        first = next(frames(a.raw, src_w, src_h))
+        wx, wy, ww, wh = windows[0]
+        page = tuple(int(v) for v in first[wy + wh // 2, wx + ww - 20])
+    ink = hex_rgb(log.get("text", "#000000"))
+    ground = tuple(round(pv + (iv - pv) * 0.07) for pv, iv in zip(page, ink))
+    bg = Image.new("RGB", (scene_w, scene_h), ground)
+    shadow = Image.new("L", (scene_w, scene_h), 0)
+    draw = ImageDraw.Draw(shadow)
+    for x, y, w, h in windows:
+        sx, sy = x + ox, y + oy
+        draw.rounded_rectangle([sx, sy + 0.012 * scene_h, sx + w, sy + h + 0.012 * scene_h], radius, fill=70)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(0.012 * scene_w))
+    bg.paste(tuple(round(v * 0.45) for v in ink), (0, 0), shadow)
+    bg = np.asarray(bg).astype(np.float32)
+    masks = []
+    for x, y, w, h in windows:
+        m = Image.new("L", (w, h), 0)
+        # Drawn at 4x and shrunk, so the corners are smooth.
+        big = Image.new("L", (w * 4, h * 4), 0)
+        ImageDraw.Draw(big).rounded_rectangle([0, 0, w * 4 - 1, h * 4 - 1], radius * 4, fill=255)
+        m = big.resize((w, h), Image.LANCZOS)
+        masks.append(np.asarray(m).astype(np.float32)[..., None] / 255)
 
-    # The looped background and mask never end, so the output's length is set explicitly.
-    trim, length = [], duration
-    if a.trim:
-        s, e = a.trim.split(",")
-        trim, length = ["-ss", s, "-to", e], float(e) - float(s)
+    events = log["events"]
+    spans = bursts(events, duration)
+    print("zoom spans:", [(round(s, 2), round(e, 2)) for s, e in spans], file=sys.stderr)
 
-    graph = (
-        f"[0:v]fps={FPS},scale={win_w}:{win_h}:flags=lanczos,format=rgba[v];"
-        f"[2:v]format=gray[m];[v][m]alphamerge[win];"
-        f"[1:v][win]overlay={x}:{y}:shortest=1,"
-        f"zoompan=z='{z}':x='{zx}':y='{zy}':d=1:s={OUT_W}x{OUT_H}:fps={FPS},"
-        f"format=yuv420p[out]"
-    )
-    cmd = ["ffmpeg", "-y", *trim, "-i", a.raw, "-loop", "1", "-i", bg, "-loop", "1", "-i", mk,
-           "-filter_complex", graph, "-map", "[out]", "-an", "-t", f"{length:.3f}",
-           "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-movflags", "+faststart", a.out]
-    subprocess.run(cmd, check=True)
+    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                            "-s", f"{OUT_W}x{OUT_H}", "-r", str(FPS), "-i", "-",
+                            "-c:v", "libx264", "-crf", "20", "-preset", "medium",
+                            "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.out],
+                           stdin=subprocess.PIPE)
+    zoom, cx, cy = Spring(1.0), Spring(scene_w / 2), Spring(scene_h / 2)
+    dt = 1 / FPS
+    for i, frame in enumerate(frames(a.raw, src_w, src_h)):
+        t = i * dt
+        canvas = bg.copy()
+        for (x, y, w, h), m in zip(windows, masks):
+            sx, sy = round(x + ox), round(y + oy)
+            part = frame[y:y + h, x:x + w].astype(np.float32)
+            region = canvas[sy:sy + h, sx:sx + w]
+            canvas[sy:sy + h, sx:sx + w] = part * m + region * (1 - m)
+
+        active = any(s <= t <= e for s, e in spans)
+        pos = cursor_at(events, t) if active else None
+        if pos:
+            px, py = to_scene(*pos)
+            z_target, x_target, y_target = ZOOM, px, py
+        else:
+            z_target, x_target, y_target = 1.0, scene_w / 2, scene_h / 2
+        z = max(1.0, zoom.step(z_target, dt))
+        view_w, view_h = scene_w / z, scene_h / z
+        x = cx.step(x_target, dt)
+        y = cy.step(y_target, dt)
+        x0 = min(max(x - view_w / 2, 0), scene_w - view_w)
+        y0 = min(max(y - view_h / 2, 0), scene_h - view_h)
+        image = Image.fromarray(canvas.astype(np.uint8))
+        image = image.resize((OUT_W, OUT_H), Image.LANCZOS, box=(x0, y0, x0 + view_w, y0 + view_h))
+        enc.stdin.write(image.tobytes())
+    enc.stdin.close()
+    enc.wait()
 
 
 if __name__ == "__main__":
