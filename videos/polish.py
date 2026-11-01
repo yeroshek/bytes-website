@@ -191,6 +191,8 @@ def main():
         t = i * dt
         if t > duration:
             break
+        if i % FPS == 0:  # a line a second of video, so a long render visibly moves
+            print(f"\rpolishing {t:4.1f} / {duration:.1f} s", end="", file=sys.stderr, flush=True)
         canvas = bg.copy()
         for (x, y, w, h), m in zip(windows, masks):
             sx, sy = round(x + ox), round(y + oy)
@@ -214,6 +216,7 @@ def main():
         image = Image.fromarray(canvas.astype(np.uint8))
         image = image.resize((OUT_W, OUT_H), resample, box=(x0, y0, x0 + view_w, y0 + view_h))
         enc.stdin.write(image.tobytes())
+    print(file=sys.stderr)
     enc.stdin.close()
     enc.wait()
 
