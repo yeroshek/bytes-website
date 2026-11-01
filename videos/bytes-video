@@ -1,9 +1,24 @@
 #!/bin/zsh
-# Runs videos/scene.swift: bytes-video capture|watch|record|setup|check <scene.yaml> [--full]
-# Swift is compiled, so the runner is built into .build/ (gitignored) and rebuilt only when scene.swift changes.
+# bytes-video build                                       Bytes Dev from your Bytes checkout, and the polish's Python
+# bytes-video capture|watch|record|setup|check <scene.yaml> [--full]
+# Everything it makes goes in .build/ (gitignored). Swift is compiled, so the runner is built there too
+# and rebuilt only when scene.swift changes.
 set -eu
 root=${0:A:h:h}
-bin=$root/.build/bytes-video
-if [[ ! -x $bin || $root/videos/scene.swift -nt $bin ]]; then mkdir -p $root/.build && swiftc -O $root/videos/scene.swift -o $bin; fi
 cd $root
+if [[ ${1:-} == build ]]; then
+  # The checkout as it is, on whatever branch it is on; nothing in it is switched or committed.
+  checkout=${BYTES_CHECKOUT:-${root:h}/Bytes}
+  [[ -d $checkout/apps/apple ]] || { echo "no Bytes checkout at $checkout (set BYTES_CHECKOUT)"; exit 1; }
+  (cd $checkout && npm run --silent authors:gen)
+  xcodebuild build -quiet -project $checkout/apps/apple/Bytes.xcodeproj -scheme Bytes -configuration Debug \
+    -derivedDataPath $root/.build/dd
+  if [[ ! -x .build/venv/bin/python ]]; then
+    python3 -m venv .build/venv && .build/venv/bin/pip install --quiet numpy pillow
+  fi
+  echo "Bytes Dev: $root/.build/dd/Build/Products/Debug/Bytes Dev.app (from $checkout, $(git -C $checkout rev-parse --abbrev-ref HEAD))"
+  exit 0
+fi
+bin=.build/bytes-video
+if [[ ! -x $bin || videos/scene.swift -nt $bin ]]; then mkdir -p .build && swiftc -O videos/scene.swift -o $bin; fi
 exec $bin "$@"

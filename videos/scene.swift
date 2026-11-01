@@ -12,9 +12,10 @@
 import AppKit
 
 let bundleID = "md.bytes.app.dev"
+// Everything it makes lives in the repo's .build/ (gitignored); bytes-video runs it from the repo's top.
+let work = URL(filePath: FileManager.default.currentDirectoryPath).appending(path: ".build")
 let appPath = ProcessInfo.processInfo.environment["BYTES_DEV_APP"]
-    ?? "/tmp/bytes-video/dd/Build/Products/Debug/Bytes Dev.app/Contents/MacOS/Bytes Dev"
-let work = URL(filePath: "/tmp/bytes-video")
+    ?? work.appending(path: "dd/Build/Products/Debug/Bytes Dev.app/Contents/MacOS/Bytes Dev").path
 let vaultCopy = work.appending(path: "vault")
 let captureDelay = 0.2  // screencapture's first frame comes about this long after it is launched
 
@@ -501,8 +502,8 @@ func record(_ scene: Scene, full: Bool) {
     try? JSONSerialization.data(withJSONObject: log, options: [.prettyPrinted, .sortedKeys]).write(to: json)
     quitDev()
     let mp4 = out.appending(path: "\(scene.name)\(full ? "" : "-preview").mp4")
-    let python = FileManager.default.fileExists(atPath: "/tmp/bytes-video/venv/bin/python")
-        ? "/tmp/bytes-video/venv/bin/python" : "/usr/bin/env"
+    let venv = work.appending(path: "venv/bin/python").path
+    let python = FileManager.default.fileExists(atPath: venv) ? venv : "/usr/bin/env"
     let polish = Process()
     polish.executableURL = URL(filePath: python)
     polish.arguments = (python == "/usr/bin/env" ? ["python3"] : [])

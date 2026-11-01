@@ -29,15 +29,16 @@ videos/bytes-video setup   scenes/rollover.yaml   # only set the window up
 videos/bytes-video check   scenes/rollover.yaml   # where each step aims in the Bytes Dev open now; no input
 ```
 
-To set a scene up by hand: `setup` it (or launch Bytes Dev on `/tmp/bytes-video/vault`), arrange the
+To set a scene up by hand: `setup` it (or launch Bytes Dev on `.build/vault`), arrange the
 window, then `capture`. Capture reads the tabs from the panes on screen, so show them side by side.
 `record` writes `raw/<scene>.mov`, `raw/<scene>.json` and `raw/<scene>-preview.mp4` (`<scene>.mp4`
 with `--full`). Leave the Mac alone while `watch` replays or `record` runs.
 
-Once: build Bytes Dev with `xcodebuild build -project apps/apple/Bytes.xcodeproj -scheme Bytes
--configuration Debug -derivedDataPath /tmp/bytes-video/dd` in a Bytes checkout (or point
-`BYTES_DEV_APP` at its binary), give the app that runs the script Accessibility and Screen Recording,
-and have ffmpeg, numpy and Pillow for the polish (`/tmp/bytes-video/venv` is used when present).
+Once, and again whenever Bytes changes: `videos/bytes-video build` builds Bytes Dev from your Bytes
+checkout next to this repo (`../Bytes`, or `BYTES_CHECKOUT=…`), on whatever branch it is on, and sets
+up the polish's Python (numpy, Pillow). Everything it makes, the app, the vault copy and the runner,
+goes in `.build/`. The app that runs the script needs Accessibility and Screen Recording, and ffmpeg
+must be installed (`brew install ffmpeg`).
 
 Abort at any time: `pkill -f "Bytes Dev"; pkill -x screencapture`.
 
