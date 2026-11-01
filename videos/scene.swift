@@ -217,7 +217,7 @@ func launchDev() -> Dev {
     p.environment = ProcessInfo.processInfo.environment.merging(["BYTES_VAULT": vaultCopy.path]) { $1 }
     p.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
     p.standardError = p.standardOutput
-    do { try p.run() } catch { fail("can't launch \(appPath)") }
+    do { try p.run() } catch { fail("Bytes Dev isn't built yet: run videos/bytes-video build") }
     for _ in 0..<100 {
         if let dev = runningDev(), dev.window != nil {
             Thread.sleep(forTimeInterval: 1)
